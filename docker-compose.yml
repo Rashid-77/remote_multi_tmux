@@ -1,0 +1,50 @@
+services:
+  server1:
+    build: 
+      context: ./server1
+      dockerfile: Dockerfile
+    container_name: tmux_server1
+    hostname: server1
+    environment:
+      - SERVER2_URL=ws://server2:8000/ws
+    ports:
+      - "8004:8001"
+    volumes:
+      - server1_sessions:/tmp/sessions
+    depends_on:
+      - server2
+    restart: unless-stopped
+    networks:
+      - tmux_network
+
+  server2:
+    build:
+      context: ./server2
+      dockerfile: Dockerfile
+    container_name: tmux_server2
+    hostname: server2
+    environment:
+      - DATA_DIR=/data
+      - SERVER1_WS_PORT=8000
+      - CLIENT_WS_PORT=8080
+      - SERVER1_URL=http://server1:8001
+      - WS_PING_INTERVAL=${WS_PING_INTERVAL:-300}     # 5 minutes default
+      - WS_PING_TIMEOUT=${WS_PING_TIMEOUT:-60}        # 1 minute default
+    ports:
+      - "8002:8000"  # Server-1 WebSocket connection
+      - "8082:8080"  # Client WebSocket connection
+    volumes:
+      - server2_data:/data
+    restart: unless-stopped
+    networks:
+      - tmux_network
+
+volumes:
+  server1_sessions:
+    driver: local
+  server2_data:
+    driver: local
+
+networks:
+  tmux_network:
+    driver: bridge
