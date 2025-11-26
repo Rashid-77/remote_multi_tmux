@@ -391,10 +391,11 @@ async def main():
     
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8001)
+    server1_port = os.getenv('SERVER1_PORT', '8001')
+    site = web.TCPSite(runner, '0.0.0.0', server1_port)
     await site.start()
     
-    logger.info("Server-1 started on port 8001")
+    logger.info(f'Server-1 started on port {server1_port}')
     
     # Keep running
     try:
