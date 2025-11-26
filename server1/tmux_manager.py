@@ -21,6 +21,7 @@ class TmuxSessionManager:
         self.sessions: Dict[str, str] = {}  # session_id -> window_name
         self.websocket = None
         self.sequence = 0
+        self.command_timestamps = {}  # session_id -> last command timestamp
         
     async def start(self):
         """Initialize tmux session and connect to server-2"""
@@ -132,6 +133,10 @@ class TmuxSessionManager:
             logger.error(f"Session {session_id} not found")
             return
             
+        # Track when we send commands to better handle output
+        import time
+        self.command_timestamps[session_id] = time.time()
+            
         await self.send_command_to_window(window_name, command)
         
     async def send_command_to_window(self, window_name: str, command: str):
@@ -146,53 +151,107 @@ class TmuxSessionManager:
             logger.error(f"Failed to send command to {window_name}: {e}")
             
     async def monitor_session_output(self, session_id: str):
-        """Monitor output from a tmux session"""
+        """Monitor output from a tmux session using pipe-pane for better accuracy"""
+        import time
+        import os
+        import aiofiles
+        
+        window_name = self.sessions.get(session_id)
+        if not window_name:
+            return
+            
+        # Create a unique log file for this session
+        log_file = f"/tmp/sessions/{session_id}/output.log"
+        
+        try:
+            # Start tmux pipe-pane to capture all output to file
+            subprocess.run([
+                "tmux", "pipe-pane",
+                "-t", f"{self.session_name}:{window_name}",
+                "-o", f"cat >> {log_file}"
+            ], check=True)
+            logger.info(f"Started pipe-pane for session {session_id}")
+            
+            last_position = 0
+            last_send_time = 0
+            min_send_interval = 0.2  # Reduced interval for better responsiveness
+            
+            while session_id in self.sessions:
+                try:
+                    current_time = time.time()
+                    
+                    # Read new content from the log file
+                    if os.path.exists(log_file):
+                        async with aiofiles.open(log_file, 'r') as f:
+                            await f.seek(last_position)
+                            new_content = await f.read()
+                            
+                            if new_content.strip() and (current_time - last_send_time) > min_send_interval:
+                                # Send only the new content
+                                await self.send_output_to_server2(session_id, new_content.rstrip())
+                                last_position = await f.tell()
+                                last_send_time = current_time
+                    
+                    await asyncio.sleep(0.1)  # Faster polling for better responsiveness
+                    
+                except Exception as e:
+                    logger.error(f"Error reading output file for session {session_id}: {e}")
+                    await asyncio.sleep(0.5)
+                    
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to start pipe-pane for session {session_id}: {e}")
+            # Fallback to capture-pane method
+            await self._fallback_monitor_session_output(session_id)
+        except Exception as e:
+            logger.error(f"Error in pipe-pane monitoring for session {session_id}: {e}")
+        finally:
+            # Clean up pipe-pane
+            try:
+                subprocess.run([
+                    "tmux", "pipe-pane",
+                    "-t", f"{self.session_name}:{window_name}",
+                    "-k"  # Kill the pipe-pane
+                ], check=False)  # Don't fail if this doesn't work
+            except:
+                pass
+                
+    async def _fallback_monitor_session_output(self, session_id: str):
+        """Fallback method using capture-pane if pipe-pane fails"""
+        import time
+        
         window_name = self.sessions.get(session_id)
         if not window_name:
             return
             
         last_output = ""
+        last_send_time = 0
+        min_send_interval = 0.3
         
         while session_id in self.sessions:
             try:
-                # Capture pane content
                 result = subprocess.run([
                     "tmux", "capture-pane",
                     "-t", f"{self.session_name}:{window_name}",
                     "-p"
                 ], capture_output=True, text=True, check=True)
                 
-                current_output = result.stdout.strip()
+                current_output = result.stdout.rstrip()
+                current_time = time.time()
                 
-                # Only send new output
-                if current_output != last_output:
-                    # Find new lines
-                    if last_output:
-                        last_lines = last_output.split('\n')
-                        current_lines = current_output.split('\n')
-                        
-                        # Find new lines by comparing from the end
-                        new_lines = []
-                        for i, line in enumerate(current_lines):
-                            if i >= len(last_lines) or line != last_lines[i]:
-                                new_lines.extend(current_lines[i:])
-                                break
-                        
-                        if new_lines:
-                            new_output = '\n'.join(new_lines)
-                            await self.send_output_to_server2(session_id, new_output)
-                    else:
-                        await self.send_output_to_server2(session_id, current_output)
+                if (current_output != last_output and 
+                    current_output.strip() and 
+                    (current_time - last_send_time) > min_send_interval):
                     
+                    await self.send_output_to_server2(session_id, current_output)
                     last_output = current_output
+                    last_send_time = current_time
                 
-                await asyncio.sleep(0.5)  # Poll every 500ms
+                await asyncio.sleep(0.3)
                 
             except subprocess.CalledProcessError:
-                # Session might be closed
                 break
             except Exception as e:
-                logger.error(f"Error monitoring session {session_id}: {e}")
+                logger.error(f"Error in fallback monitoring for session {session_id}: {e}")
                 break
                 
     async def send_output_to_server2(self, session_id: str, output: str):
@@ -223,6 +282,16 @@ class TmuxSessionManager:
             return False
             
         try:
+            # Stop pipe-pane for this window first
+            try:
+                subprocess.run([
+                    "tmux", "pipe-pane",
+                    "-t", f"{self.session_name}:{window_name}",
+                    "-k"  # Kill the pipe-pane
+                ], check=False)  # Don't fail if this doesn't work
+            except:
+                pass
+                
             # Kill tmux window
             subprocess.run([
                 "tmux", "kill-window",
@@ -231,6 +300,10 @@ class TmuxSessionManager:
             
             # Remove from sessions
             del self.sessions[session_id]
+            
+            # Clean up command tracking
+            if session_id in self.command_timestamps:
+                del self.command_timestamps[session_id]
             
             # Clean up session directory
             import shutil
