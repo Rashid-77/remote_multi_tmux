@@ -6,7 +6,7 @@ import uuid
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -262,7 +262,7 @@ class TmuxSessionManager:
         message = {
             "type": "stdout",
             "sessionId": session_id,
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat() + 'Z',
             "data": output,
             "sequence": self.sequence
         }
@@ -349,7 +349,7 @@ class TmuxHTTPServer:
             
             response_data = {
                 'session_id': session_id,
-                'created_at': datetime.utcnow().isoformat() + 'Z',
+                'created_at': datetime.now(timezone.utc).isoformat() + 'Z',
                 'websocket_endpoint': f'ws://server2:8000/ws/{session_id}',
                 'websocket_token': 'dummy_token'
             }

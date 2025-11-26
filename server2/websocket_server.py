@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Set, Optional
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -316,7 +316,7 @@ class WebSocketRouter:
         message = {
             'type': 'session_destroy',
             'sessionId': session_id,
-            'timestamp': datetime.utcnow().isoformat() + 'Z'
+            'timestamp': datetime.now(timezone.utc).isoformat() + 'Z'
         }
         
         try:
@@ -334,7 +334,7 @@ class WebSocketRouter:
             'type': 'command',
             'sessionId': session_id,
             'data': command,
-            'timestamp': datetime.utcnow().isoformat() + 'Z'
+            'timestamp': datetime.now(timezone.utc).isoformat() + 'Z'
         }
         
         try:
