@@ -87,6 +87,14 @@ class Program1Client:
                 print(f"✓ Command '{command}' sent to topic '{topic_name}'")
             else:
                 print(f"✗ Failed to send command '{command}' to topic '{topic_name}'")
+
+        elif response_type == 'output':
+            topic_name = data.get('topicName')
+            output = data.get('data')
+            timestamp = data.get('timestamp', '')
+            if output and topic_name == self.current_topic:
+                # Display the output with a prefix to distinguish from local messages
+                print(f"📤 {output.strip()}")
         else:
             print(f"Unknown response type: {response_type}")
             

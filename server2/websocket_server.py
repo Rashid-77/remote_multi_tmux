@@ -20,8 +20,9 @@ class Program2Interface:
     def __init__(self, websocket_router):
         self.websocket_router = websocket_router
         self.topics: Dict[str, str] = {}  # topic_name -> session_id
+        self.topic_owners: Dict[str, object] = {}  # topic_name -> client websocket
         
-    async def create_topic(self, topic_name: str, user_id: str) -> bool:
+    async def create_topic(self, topic_name: str, user_id: str, client_websocket=None) -> bool:
         """Create a new topic and start a session"""
         try:
             # Create topic directory
@@ -35,6 +36,10 @@ class Program2Interface:
             if session_id:
                 # Store topic mapping
                 self.topics[topic_name] = session_id
+                
+                # Store the client that owns this topic
+                if client_websocket:
+                    self.topic_owners[topic_name] = client_websocket
                 
                 # Log session opened
                 await self.log_to_topic(topic_name, f"session opened - {session_id}")
@@ -65,6 +70,10 @@ class Program2Interface:
             
             # Remove from topics
             del self.topics[topic_name]
+            
+            # Clean up client ownership
+            if topic_name in self.topic_owners:
+                del self.topic_owners[topic_name]
             
             logger.info(f"Stopped topic {topic_name}")
             return True
@@ -105,6 +114,34 @@ class Program2Interface:
         if topic_name:
             await self.log_to_topic(topic_name, f"OUTPUT: {output}")
             logger.info(f"Logged output for topic {topic_name}: {output[:100]}...")
+            
+            # Send output only to the client that owns this topic
+            await self.send_output_to_owner(topic_name, output)
+            
+    async def send_output_to_owner(self, topic_name: str, output: str):
+        """Send output only to the client that owns this topic"""
+        if topic_name not in self.topic_owners:
+            return
+            
+        owner_client = self.topic_owners[topic_name]
+        if not owner_client:
+            return
+            
+        # Create output message for the owner client
+        message = {
+            "type": "output",
+            "topicName": topic_name,
+            "data": output,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        try:
+            await owner_client.send(json.dumps(message))
+            logger.debug(f"Sent output to owner of topic {topic_name}")
+        except Exception as e:
+            logger.warning(f"Failed to send output to topic owner: {e}")
+            # Remove the disconnected client
+            del self.topic_owners[topic_name]
             
     async def log_to_topic(self, topic_name: str, message: str):
         """Log a message to topic's log file"""
@@ -202,7 +239,7 @@ class WebSocketRouter:
                 user_id = data.get('userId')
                 
                 if topic_name and user_id and self.program2:
-                    success = await self.program2.create_topic(topic_name, user_id)
+                    success = await self.program2.create_topic(topic_name, user_id, websocket)
                     response = {
                         'type': 'topic_created' if success else 'topic_create_failed',
                         'topicName': topic_name,
